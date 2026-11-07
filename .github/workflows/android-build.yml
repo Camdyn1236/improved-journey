@@ -1,0 +1,80 @@
+name: Android NDK Build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  NDK_VERSION: "26.1.10909125"
+  CMAKE_VERSION: "3.22.1"
+  BUILD_TOOLS: "35.0.0"
+  PLATFORM: "android-35"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Locate Android project
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f gradlew && -d app ]]; then
+            echo "dir=." >> "$GITHUB_OUTPUT"
+          elif [[ -f MistyTemp/gradlew && -d MistyTemp/app ]]; then
+            echo "dir=MistyTemp" >> "$GITHUB_OUTPUT"
+          else
+            echo "Android project not found (expected gradlew and app/ at root or in MistyTemp/)" >&2
+            exit 1
+          fi
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: true
+
+      - name: Install Android build packages
+        run: |
+          sdkmanager --install \
+            "ndk;${NDK_VERSION}" \
+            "cmake;${CMAKE_VERSION}" \
+            "build-tools;${BUILD_TOOLS}" \
+            "platform-tools" \
+            "platforms;${PLATFORM}"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Configure local SDK paths
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: |
+          chmod +x gradlew
+          printf 'sdk.dir=%s\nndk.dir=%s/ndk/%s\n' \
+            "$ANDROID_HOME" "$ANDROID_HOME" "$NDK_VERSION" > local.properties
+
+      - name: Build native shared library
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: ./gradlew --no-daemon :app:externalNativeBuildDebug -Pandroid.injected.build.abi=${{ matrix.abi }}
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v4
+        with:
+          name: mistytemp-${{ matrix.abi }}-so
+          path: |
+            **/app/build/intermediates/cxx/**/obj/${{ matrix.abi }}/*.so
+            **/app/build/intermediates/cmake/**/${{ matrix.abi }}/*.so
+            **/app/build/intermediates/**/*.so
+          if-no-files-found: error
